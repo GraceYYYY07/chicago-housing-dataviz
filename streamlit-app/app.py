@@ -1,16 +1,13 @@
 """
 app.py
-Chicago South Side: Housing Density & Health Inequality
+Housing Density, Income, and Uninsured Rates in Chicago’s South Side
 
-This dashboard is designed for non-technical audiences.
-
-What this dashboard shows
-1) Map: where density / income / uninsured rates are high or low
-2) Relationships: income ↔ uninsured, density ↔ uninsured
-3) Priority list: tracts that meet high-density + low-income + high-uninsured thresholds
+This dashboard is descriptive (not causal). It helps identify where uninsured
+residents are concentrated and how priority lists change under different
+thresholds and weighting scenarios.
 
 Data input (no data is fabricated):
-- derived-data/merged_tract.geojson
+- data/derived-data/merged_tract.geojson
   Produced by preprocessing.py
 """
 
@@ -27,80 +24,89 @@ from streamlit_folium import st_folium
 from pathlib import Path
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Theme constants (Chicago-style)
+# =============================================================================
+CHI_BLUE = "#0B4F9E"
+CHI_RED = "#E4002B"
+LIGHT_GRAY = "#F5F7FA"
+TEXT_DARK = "#111111"
+
+
+# =============================================================================
 # Page config
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 st.set_page_config(
-    page_title="South Side Inequality Dashboard",
-    page_icon="🏙️",
+    page_title="Housing Density, Income, and Uninsured Rates in Chicago’s South Side",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Styling (light theme)
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown("""
+# =============================================================================
+# Styling (simple, human, less “template”)
+# =============================================================================
+st.markdown(f"""
 <style>
-    .stApp { background-color: #ffffff; }
-    .main .block-container { padding: 1.5rem 2rem; }
+    .stApp {{ background-color: #ffffff; }}
+    .main .block-container {{ padding: 1.4rem 2rem; }}
 
-    h1 { 
-        color: #111111 !important; 
-        font-family: 'Georgia', serif;
-        border-bottom: 2px solid #FF6B35; 
+    h1 {{
+        color: {TEXT_DARK} !important;
+        border-bottom: 3px solid {CHI_RED};
         padding-bottom: 10px;
-    }
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }}
 
-    h2, h3 { color: #222222 !important; }
+    h2, h3 {{
+        color: {TEXT_DARK} !important;
+        font-family: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial;
+    }}
 
-    [data-testid="metric-container"] {
-        background-color: #f4f4f4; 
-        border: 1px solid #dddddd;
-        border-radius: 10px; 
-        padding: 12px;
-    }
+    [data-testid="metric-container"] {{
+        background-color: {LIGHT_GRAY};
+        border: 1px solid #E2E8F0;
+        border-radius: 14px;
+        padding: 14px;
+    }}
 
-    [data-testid="metric-container"] label { 
-        color: #555555 !important; 
-    }
-
-    [data-testid="metric-container"] [data-testid="stMetricValue"] {
-        color: #FF6B35 !important; 
+    [data-testid="metric-container"] [data-testid="stMetricValue"] {{
+        color: {CHI_BLUE} !important;
         font-size: 1.6rem;
-    }
+        font-weight: 700;
+    }}
 
-    [data-testid="stSidebar"] { 
-        background-color: #f8f9fa; 
-    }
+    [data-testid="stSidebar"] {{
+        background-color: #FAFBFD;
+    }}
 
-    [data-testid="stSidebar"] * { 
-        color: #111111 !important; 
-    }
+    [data-testid="stSidebar"] * {{
+        color: {TEXT_DARK} !important;
+    }}
 
-    .stSelectbox > div > div { 
-        background-color: #ffffff !important; 
-        color: #111111 !important; 
-    }
+    .stCaption {{
+        color: #4B5563 !important;
+    }}
+
+    /* Make tables feel less “stock” */
+    .stDataFrame {{
+        border: 1px solid #E2E8F0;
+        border-radius: 12px;
+        overflow: hidden;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Data loading
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 @st.cache_data
 def load_data() -> gpd.GeoDataFrame:
-    """
-    Load the tract-level GeoJSON built by preprocessing.py.
-    This function does not create or fabricate any data; it only reads and formats.
-    """
-    ROOT = Path(__file__).resolve().parents[1]  # root
+    ROOT = Path(__file__).resolve().parents[1]
     DATA_PATH = ROOT / "data" / "derived-data" / "merged_tract.geojson"
-
     gdf = gpd.read_file(DATA_PATH)
 
-    # Ensure numeric types (safe conversion)
     numeric_cols = [
         "addr_count", "med_hh_inc", "pct_no_hlt", "pop_0_17", "tot_pop",
         "area_sqkm", "addr_per_sqkm", "pop_per_sqkm"
@@ -109,12 +115,15 @@ def load_data() -> gpd.GeoDataFrame:
         if c in gdf.columns:
             gdf[c] = pd.to_numeric(gdf[c], errors="coerce")
 
-    # Derived, user-facing fields
-    # pct_no_hlt in your data is likely in [0,1] so convert to percent.
-    if "pct_no_hlt" in gdf.columns:
-        gdf["uninsured_pct"] = gdf["pct_no_hlt"] * 100
+    # pct_no_hlt likely in [0,1]
+    gdf["uninsured_pct"] = gdf["pct_no_hlt"] * 100 if "pct_no_hlt" in gdf.columns else np.nan
+
+    # Estimated uninsured residents (KEY policy metric)
+    # If tot_pop missing, stays NaN (no fabrication)
+    if "tot_pop" in gdf.columns:
+        gdf["est_uninsured"] = (gdf["uninsured_pct"] / 100.0) * gdf["tot_pop"]
     else:
-        gdf["uninsured_pct"] = np.nan
+        gdf["est_uninsured"] = np.nan
 
     if "pop_0_17" in gdf.columns and "tot_pop" in gdf.columns:
         gdf["child_pct"] = gdf["pop_0_17"] / gdf["tot_pop"].replace(0, np.nan) * 100
@@ -129,9 +138,8 @@ def load_data() -> gpd.GeoDataFrame:
     else:
         gdf["tract_name"] = gdf["GEOID"].astype(str)
 
-    # Income quartile label (should exist from preprocessing.py, but keep safe fallback)
+    # Income quartile label (fallback if missing)
     if "income_quartile" not in gdf.columns:
-        # Create it if missing (still based on existing income values, not fabricated)
         if "med_hh_inc" in gdf.columns and gdf["med_hh_inc"].notna().any():
             gdf["income_quartile"] = pd.qcut(
                 gdf["med_hh_inc"], q=4,
@@ -144,93 +152,110 @@ def load_data() -> gpd.GeoDataFrame:
 
 
 def winsorize(s: pd.Series, lo: float = 0.01, hi: float = 0.99) -> pd.Series:
-    """Clip extreme values for more readable plots."""
-    s = s.replace([np.inf, -np.inf], np.nan).dropna()
-    if s.empty:
+    s = s.replace([np.inf, -np.inf], np.nan)
+    if s.dropna().empty:
         return s
     a, b = s.quantile(lo), s.quantile(hi)
     return s.clip(a, b)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # Load data
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 gdf = load_data()
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Sidebar controls
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# Sidebar
+# =============================================================================
 with st.sidebar:
-    st.markdown("## 🧭 Explore the South Side")
-    st.caption("A policy-friendly view of density, income, and uninsured rates.")
+    st.markdown("## Settings")
+    st.caption("Adjust filters and see how the priority list changes.")
+
     st.markdown("---")
 
+    # Map metric
     map_metric_options = {
-        "Address density (addresses per sq km)": "addr_per_sqkm",
-        "Median household income ($)": "med_hh_inc",
         "Uninsured rate (%)": "uninsured_pct",
-        "Population density (people per sq km)": "pop_per_sqkm",
-        "Children share (%)": "child_pct"
+        "Median household income ($)": "med_hh_inc",
+        "Address density (addresses per sq km)": "addr_per_sqkm",
     }
-    map_metric_label = st.selectbox("Map metric", list(map_metric_options.keys()), index=0)
+    map_metric_label = st.selectbox("Map layer", list(map_metric_options.keys()), index=0)
     map_metric = map_metric_options[map_metric_label]
 
     st.markdown("---")
-    st.markdown("### Filter by income")
+    st.markdown("### Priority rules (thresholds)")
 
-    # Safe min/max for slider
-    inc_series = gdf["med_hh_inc"].replace([np.inf, -np.inf], np.nan).dropna()
-    if inc_series.empty:
-        min_inc, max_inc = 0, 1
-    else:
-        min_inc, max_inc = int(inc_series.min()), int(inc_series.max())
+    st.caption(
+        "We use **quantiles** because policy teams often need a transparent way to pick the "
+        "**top X%** tracts when resources are limited. For example, a 0.75 density threshold "
+        "means “top 25% densest tracts (within the current filtered set).”"
+    )
 
-    income_range = st.slider(
-        "Median income range ($)",
-        min_value=min_inc,
-        max_value=max_inc,
-        value=(min_inc, max_inc),
-        step=1000
+    density_q = st.slider(
+        "High density (quantile)",
+        0.50, 0.95, 0.75, 0.05,
+        help="Higher = stricter. 0.75 flags the top 25% densest tracts."
+    )
+    low_income_q = st.slider(
+        "Low income (quantile)",
+        0.05, 0.50, 0.25, 0.05,
+        help="Lower = stricter. 0.25 flags the bottom 25% income tracts."
+    )
+    uninsured_q = st.slider(
+        "High uninsured (quantile)",
+        0.50, 0.95, 0.75, 0.05,
+        help="Higher = stricter. 0.75 flags the top 25% uninsured-rate tracts."
     )
 
     st.markdown("---")
-    st.markdown("### Define priority tracts")
-    st.caption("Flag tracts that are **high density + low income + high uninsured**.")
+    st.markdown("### Scenario weighting (priority score)")
 
-    density_q = st.slider("High density threshold (quantile)", 0.50, 0.95, 0.75, 0.05)
-    low_income_q = st.slider("Low income threshold (quantile)", 0.05, 0.50, 0.25, 0.05)
-    uninsured_q = st.slider("High uninsured threshold (quantile)", 0.50, 0.95, 0.75, 0.05)
+    st.caption(
+        "Income tends to explain uninsured rates more strongly than density. "
+        "So the default weights emphasize **uninsured severity** and **low income**, "
+        "while density is used mainly for **reach efficiency** (where outreach can reach more people)."
+    )
+
+    w_uninsured = st.slider("Weight: uninsured severity", 0.0, 1.0, 0.50, 0.05)
+    w_income = st.slider("Weight: low income", 0.0, 1.0, 0.35, 0.05)
+    w_density = st.slider("Weight: reach efficiency (density)", 0.0, 1.0, 0.15, 0.05)
 
     st.markdown("---")
-    st.markdown("### Plot settings")
-    use_log_density = st.checkbox("Use log scale for density in scatterplots", value=True)
+    st.markdown("### Plot options")
+
     clip_outliers = st.checkbox("Clip extreme values (1%–99%)", value=True)
+    use_log_density = st.checkbox("Use log scale for density plots", value=True)
 
     st.markdown("---")
-    st.markdown("### Data notes")
-    st.caption("ACS 5-year estimates + tract-level aggregation of address points.")
-    st.caption("Address density is a proxy (not official housing units).")
+    with st.expander("Limitations (plain English)", expanded=False):
+        st.write(
+            "- This tool is **descriptive**, not causal.\n"
+            "- ACS 5-year estimates can be noisy for small areas.\n"
+            "- Address density is a **proxy** for residential concentration (not official housing units).\n"
+            "- Some tracts may have very low/zero residential address points (e.g., industrial or park areas). "
+            "We treat those as **missing** for density plots."
+        )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Build filtered dataset (IMPORTANT: must exist BEFORE using metrics/tabs)
-# ─────────────────────────────────────────────────────────────────────────────
-filtered = gdf[
-    (gdf["med_hh_inc"] >= income_range[0]) &
-    (gdf["med_hh_inc"] <= income_range[1])
-].copy()
+# =============================================================================
+# Filter dataset
+# =============================================================================
+filtered = gdf.copy()
 
-# If filter removes everything, stop gracefully
 if filtered.empty:
-    st.markdown("# 🏙️ Chicago South Side: Housing Density & Health Inequality")
+    st.title("Housing Density, Income, and Uninsured Rates in Chicago’s South Side")
     st.warning("No tracts match the current income filter. Please widen the income range.")
     st.stop()
 
-# Thresholds based on the filtered distribution (transparent & responsive)
-d_th = filtered["addr_per_sqkm"].replace([np.inf, -np.inf], np.nan).dropna().quantile(density_q)
-i_th = filtered["med_hh_inc"].replace([np.inf, -np.inf], np.nan).dropna().quantile(low_income_q)
-u_th = filtered["uninsured_pct"].replace([np.inf, -np.inf], np.nan).dropna().quantile(uninsured_q)
+# Quantile thresholds within filtered set
+d_series = filtered["addr_per_sqkm"].replace([np.inf, -np.inf], np.nan).dropna()
+i_series = filtered["med_hh_inc"].replace([np.inf, -np.inf], np.nan).dropna()
+u_series = filtered["uninsured_pct"].replace([np.inf, -np.inf], np.nan).dropna()
+
+d_th = d_series.quantile(density_q) if not d_series.empty else np.nan
+i_th = i_series.quantile(low_income_q) if not i_series.empty else np.nan
+u_th = u_series.quantile(uninsured_q) if not u_series.empty else np.nan
 
 filtered["priority_flag"] = (
     (filtered["addr_per_sqkm"] >= d_th) &
@@ -238,75 +263,68 @@ filtered["priority_flag"] = (
     (filtered["uninsured_pct"] >= u_th)
 )
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Header: research question & structure
-# ─────────────────────────────────────────────────────────────────────────────
-st.markdown("# 🏙️ Chicago South Side: Housing Density & Health Inequality")
-
-st.markdown("""
-### Research question
-**Do higher-density tracts in Chicago's South Side tend to be lower-income and have higher uninsured rates?**  
-This dashboard provides **descriptive, correlational evidence** using Census Tract-level indicators.
-
-### Dashboard structure
-1) **Map** the spatial distribution of key indicators  
-2) **Visualize relationships** (income ↔ uninsured, density ↔ uninsured)  
-3) **Generate an action list**: priority tracts under clear thresholds
-""")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Top KPIs (now safe because 'filtered' is defined)
-# ─────────────────────────────────────────────────────────────────────────────
-k1, k2, k3, k4 = st.columns(4)
-
-with k1:
-    st.metric("Avg median income", f"${filtered['med_hh_inc'].mean():,.0f}")
-
-with k2:
-    st.metric("Avg uninsured rate", f"{filtered['uninsured_pct'].mean():.1f}%")
-
-with k3:
-    st.metric("Avg address density", f"{filtered['addr_per_sqkm'].mean():,.0f} /km²")
-
-with k4:
-    st.metric("Priority tracts", f"{int(filtered['priority_flag'].sum()):,}")
-
+# =============================================================================
+# Header (less academic, more action)
+# =============================================================================
+st.title("Housing Density, Income, and Uninsured Rates in Chicago’s South Side")
+st.write(
+   "This dashboard explores how housing density and neighborhood income relate to uninsured rates at the Census Tract level. It provides descriptive, tract-level evidence for policy discussion."
+)
 
 st.markdown("---")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tabs (no regression tab)
-# ─────────────────────────────────────────────────────────────────────────────
-tabs = st.tabs(["🗺️ 1) Map", "📈 2) Relationships", "📌 3) Priority tracts"])
+# =============================================================================
+# KPIs (add estimated uninsured)
+# =============================================================================
+total_pop = filtered["tot_pop"].replace([np.inf, -np.inf], np.nan).sum(skipna=True)
+avg_income = filtered["med_hh_inc"].replace([np.inf, -np.inf], np.nan).mean()
+avg_unins = filtered["uninsured_pct"].replace([np.inf, -np.inf], np.nan).mean()
+avg_density = filtered["addr_per_sqkm"].replace([np.inf, -np.inf], np.nan).mean()
+
+total_est_uninsured = filtered["est_uninsured"].replace([np.inf, -np.inf], np.nan).sum(skipna=True)
+
+priority = filtered[filtered["priority_flag"]].copy()
+priority_est_uninsured = priority["est_uninsured"].replace([np.inf, -np.inf], np.nan).sum(skipna=True)
+priority_count = int(priority.shape[0])
+
+c1, c2, c3, c4, c5 = st.columns(5)
+c1.metric("Avg median income", f"${avg_income:,.0f}")
+c2.metric("Avg uninsured rate", f"{avg_unins:.1f}%")
+c3.metric("Estimated uninsured (all tracts)", f"{total_est_uninsured:,.0f}")
+c4.metric("Priority tracts", f"{priority_count:,}")
+c5.metric("Estimated uninsured (priority tracts)", f"{priority_est_uninsured:,.0f}")
+
+st.markdown("---")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+tabs = st.tabs(["Map", "Relationships", "Priority list"])
+
+
+# =============================================================================
 # TAB 1: MAP
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 with tabs[0]:
     left, right = st.columns([3, 2])
 
     with left:
-        st.markdown(f"## Map: {map_metric_label}")
+        st.subheader(f"Map: {map_metric_label}")
 
-        # Center map on the average centroid of filtered tracts
         center_lat = float(filtered.geometry.centroid.y.mean())
         center_lon = float(filtered.geometry.centroid.x.mean())
-
         m = folium.Map(location=[center_lat, center_lon], zoom_start=11, tiles="OpenStreetMap")
 
-        # Compute vmin/vmax for map legend range (robust)
-        s = filtered[map_metric].replace([np.inf, -np.inf], np.nan).dropna()
-        if s.empty:
-            vmin, vmax = 0.0, 1.0
+        # Choose a map palette aligned with blue/red
+        # - Uninsured / estimated uninsured: Reds
+        # - Income: Blues (reversed so higher income darker)
+        # - Density: Blues (darker = more dense)
+        if map_metric in ["uninsured_pct", "est_uninsured"]:
+            fill_color = "Reds"
+        elif map_metric == "med_hh_inc":
+            fill_color = "Blues"
         else:
-            vmin = float(s.quantile(0.05))
-            vmax = float(s.quantile(0.95))
-
-        fill_color = "YlOrRd" if map_metric != "med_hh_inc" else "RdYlBu_r"
+            fill_color = "Blues"
 
         folium.Choropleth(
             geo_data=filtered.__geo_interface__,
@@ -316,76 +334,73 @@ with tabs[0]:
             fill_color=fill_color,
             fill_opacity=0.75,
             line_opacity=0.2,
-            nan_fill_color="#666666",
+            nan_fill_color="#B0B7C3",
             legend_name=map_metric_label
         ).add_to(m)
 
-        tooltip_fields = ["tract_name", "med_hh_inc", "uninsured_pct", "addr_per_sqkm", "tot_pop"]
-        tooltip_aliases = ["Tract:", "Median income ($):", "Uninsured (%):", "Address density (/km²):", "Population:"]
+        tooltip_fields = ["tract_name", "med_hh_inc", "uninsured_pct", "est_uninsured", "addr_per_sqkm", "tot_pop"]
+        tooltip_aliases = ["Tract:", "Median income ($):", "Uninsured (%):", "Est. uninsured:", "Address density (/km²):", "Population:"]
 
         folium.GeoJson(
             filtered.__geo_interface__,
-            style_function=lambda x: {"fillOpacity": 0, "weight": 0.5, "color": "#444444"},
+            style_function=lambda x: {"fillOpacity": 0, "weight": 0.6, "color": "#4B5563"},
             tooltip=folium.GeoJsonTooltip(
                 fields=tooltip_fields,
                 aliases=tooltip_aliases,
                 localize=True,
                 sticky=True,
                 labels=True,
-                style="background-color:#1a1a2e;color:white;font-size:12px;border:1px solid #444466;border-radius:6px;padding:8px;"
+                style="background-color:#ffffff;color:#111111;font-size:12px;border:1px solid #CBD5E1;border-radius:8px;padding:10px;"
             )
         ).add_to(m)
 
-        # Highlight priority tracts with orange outlines
-        pr = filtered[filtered["priority_flag"]]
-        if not pr.empty:
+        # Priority outlines in Chicago red
+        if not priority.empty:
             folium.GeoJson(
-                pr.__geo_interface__,
-                style_function=lambda x: {"fillOpacity": 0, "weight": 3, "color": "#FF6B35"},
+                priority.__geo_interface__,
+                style_function=lambda x: {"fillOpacity": 0, "weight": 3, "color": CHI_RED},
                 name="Priority tracts"
             ).add_to(m)
 
-        map_key = f"map_{map_metric}_{income_range[0]}_{income_range[1]}_{density_q}_{low_income_q}_{uninsured_q}"
-        st_folium(m, height=540, use_container_width=True, key=map_key)
+        map_key = f"map_{map_metric}_{density_q}_{low_income_q}_{uninsured_q}"
+        st_folium(m, height=560, use_container_width=True, key=map_key)
 
     with right:
-        st.markdown("## How to read this map")
-        st.info(
-            "Each polygon is a Census Tract.\n\n"
-            "Address density = addresses / tract area (sq km).\n\n"
-            "Orange outlines = priority tracts meeting all three conditions:\n"
-            "- High density\n- Low income\n- High uninsured"
+        st.subheader("How to read this")
+        st.write(
+            "- Each polygon is a Census Tract.\n"
+            "- Orange/red shading = higher uninsured (or higher estimated uninsured, depending on layer).\n"
+            f"- Red outlines = tracts flagged by your current thresholds.\n\n"
+            "**What density means here:** density is used to locate where outreach may reach more residents per visit/site. "
+            "It is not assumed to cause uninsurance."
         )
 
-        st.markdown("## Distribution (filtered tracts)")
+        # Simple distribution chart
         dist = filtered[map_metric].replace([np.inf, -np.inf], np.nan).dropna()
         dist_df = pd.DataFrame({"value": dist})
 
-        hist = alt.Chart(dist_df).mark_bar(opacity=0.85).encode(
+        hist = alt.Chart(dist_df).mark_bar(opacity=0.9, color=CHI_BLUE).encode(
             x=alt.X("value:Q", bin=alt.Bin(maxbins=25), title=map_metric_label),
             y=alt.Y("count():Q", title="Number of tracts")
-        ).properties(height=200).configure(background="#1a1a2e").configure_axis(
-            labelColor="white", titleColor="white", gridColor="#333355"
+        ).properties(height=220).configure_axis(
+            labelColor=TEXT_DARK, titleColor=TEXT_DARK, gridColor="#E5E7EB"
         ).configure_view(stroke=None)
 
         st.altair_chart(hist, use_container_width=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 # TAB 2: RELATIONSHIPS
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
 with tabs[1]:
-    st.markdown("## Relationships (visual evidence)")
+    st.subheader("Relationships (visual evidence)")
 
     df = filtered[[
-        "tract_name", "income_quartile", "med_hh_inc", "uninsured_pct", "addr_per_sqkm", "tot_pop"
-    ]].replace([np.inf, -np.inf], np.nan).dropna().copy()
+        "tract_name", "income_quartile", "med_hh_inc", "uninsured_pct",
+        "addr_per_sqkm", "tot_pop", "est_uninsured"
+    ]].replace([np.inf, -np.inf], np.nan).copy()
 
-    if df.empty:
-        st.warning("Not enough valid data after filtering to plot relationships. Try widening filters.")
-        st.stop()
-
-    # Optional outlier clipping for clearer charts (still using real data, just clipped display)
+    # Clip for readability
     if clip_outliers:
         df["med_hh_inc_c"] = winsorize(df["med_hh_inc"])
         df["uninsured_pct_c"] = winsorize(df["uninsured_pct"])
@@ -395,148 +410,246 @@ with tabs[1]:
         df["uninsured_pct_c"] = df["uninsured_pct"]
         df["addr_per_sqkm_c"] = df["addr_per_sqkm"]
 
-    st.markdown("### A) Income vs uninsured rate")
+    # --- A) Income vs uninsured
+    st.write("**A) Income vs uninsured rate** (income tends to be the strongest separator)")
 
-    base_a = alt.Chart(df).mark_circle(opacity=0.7, stroke="white", strokeWidth=0.2).encode(
-        x=alt.X("med_hh_inc_c:Q", title="Median household income ($)"),
-        y=alt.Y("uninsured_pct_c:Q", title="Uninsured rate (%)"),
-        color=alt.Color("income_quartile:N", title="Income quartile"),
-        size=alt.Size("tot_pop:Q", title="Population", scale=alt.Scale(range=[20, 320])),
-        tooltip=[
-            alt.Tooltip("tract_name:N", title="Tract"),
-            alt.Tooltip("med_hh_inc:Q", title="Income ($)", format=",.0f"),
-            alt.Tooltip("uninsured_pct:Q", title="Uninsured (%)", format=".1f")
-        ]
-    ).properties(height=340)
-
-    reg_a = base_a.transform_regression("med_hh_inc_c", "uninsured_pct_c").mark_line(
-        color="white", strokeDash=[5, 3], strokeWidth=2, opacity=0.7
-    )
-
-    st.altair_chart(
-        (base_a + reg_a)
-        .configure(background="#1a1a2e")
-        .configure_axis(labelColor="white", titleColor="white", gridColor="#333355")
-        .configure_view(stroke=None)
-        .configure_legend(labelColor="white", titleColor="white", fillColor="#2a2a4a", strokeColor="#444466"),
-        use_container_width=True
-    )
-
-    st.markdown("---")
-    st.markdown("### B) Address density vs uninsured rate")
-
-    if use_log_density:
-        df["log_density"] = np.log1p(df["addr_per_sqkm_c"])
-        x_field = "log_density:Q"
-        x_title = "Address density (log1p)"
-        reg_x = "log_density"
+    df_a = df.dropna(subset=["med_hh_inc_c", "uninsured_pct_c", "tot_pop"]).copy()
+    if df_a.empty:
+        st.warning("Not enough valid data to plot income vs uninsured under current filters.")
     else:
-        x_field = "addr_per_sqkm_c:Q"
-        x_title = "Address density (addresses per sq km)"
-        reg_x = "addr_per_sqkm_c"
+        # Blue gradient for income quartiles (Chicago-ish)
+        income_scale = alt.Scale(
+            domain=["Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"],
+            range=["#A6C8FF", "#6FA8FF", CHI_BLUE, "#08306B"]
+        )
 
-    base_b = alt.Chart(df).mark_circle(opacity=0.7, stroke="white", strokeWidth=0.2).encode(
-        x=alt.X(x_field, title=x_title),
-        y=alt.Y("uninsured_pct_c:Q", title="Uninsured rate (%)"),
-        color=alt.Color("income_quartile:N", title="Income quartile"),
-        size=alt.Size("tot_pop:Q", title="Population", scale=alt.Scale(range=[20, 320])),
-        tooltip=[
-            alt.Tooltip("tract_name:N", title="Tract"),
-            alt.Tooltip("addr_per_sqkm:Q", title="Density (/km²)", format=",.0f"),
-            alt.Tooltip("uninsured_pct:Q", title="Uninsured (%)", format=".1f"),
-            alt.Tooltip("med_hh_inc:Q", title="Income ($)", format=",.0f")
-        ]
-    ).properties(height=340)
+        base_a = alt.Chart(df_a).mark_circle(opacity=0.75).encode(
+            x=alt.X("med_hh_inc_c:Q", title="Median household income ($)"),
+            y=alt.Y("uninsured_pct_c:Q", title="Uninsured rate (%)"),
+            color=alt.Color("income_quartile:N", scale=income_scale, title="Income quartile"),
+            size=alt.Size("tot_pop:Q", title="Population", scale=alt.Scale(range=[20, 280])),
+            tooltip=[
+                alt.Tooltip("tract_name:N", title="Tract"),
+                alt.Tooltip("med_hh_inc:Q", title="Income ($)", format=",.0f"),
+                alt.Tooltip("uninsured_pct:Q", title="Uninsured (%)", format=".1f"),
+                alt.Tooltip("est_uninsured:Q", title="Est. uninsured", format=",.0f"),
+            ]
+        ).properties(height=340)
 
-    reg_b = base_b.transform_regression(reg_x, "uninsured_pct_c").mark_line(
-        color="white", strokeDash=[5, 3], strokeWidth=2, opacity=0.7
-    )
+        reg_a = base_a.transform_regression("med_hh_inc_c", "uninsured_pct_c").mark_line(
+            color=CHI_RED, strokeWidth=2, opacity=0.8
+        )
 
-    st.altair_chart(
-        (base_b + reg_b)
-        .configure(background="#1a1a2e")
-        .configure_axis(labelColor="white", titleColor="white", gridColor="#333355")
-        .configure_view(stroke=None)
-        .configure_legend(labelColor="white", titleColor="white", fillColor="#2a2a4a", strokeColor="#444466"),
-        use_container_width=True
-    )
+        st.altair_chart(
+            (base_a + reg_a)
+            .configure_axis(labelColor=TEXT_DARK, titleColor=TEXT_DARK, gridColor="#E5E7EB")
+            .configure_view(stroke=None)
+            .configure_legend(labelColor=TEXT_DARK, titleColor=TEXT_DARK),
+            use_container_width=True
+        )
+
+    st.markdown("")
+
+    # --- B) Density vs uninsured (treat 0 as missing)
+    st.write("**B) Address density vs uninsured rate** (density is mainly a reach / targeting lens)")
+
+    df_b = df.copy()
+    # Treat 0 or negative density as missing for plotting (common for industrial/park-like tracts)
+    zero_or_missing = df_b["addr_per_sqkm_c"].fillna(0) <= 0
+    excluded_n = int(zero_or_missing.sum())
+    df_b.loc[zero_or_missing, "addr_per_sqkm_c"] = np.nan
+
+    # Drop missing for this plot only
+    df_b = df_b.dropna(subset=["addr_per_sqkm_c", "uninsured_pct_c", "tot_pop"])
+
+    if excluded_n > 0:
+        st.caption(f"Note: {excluded_n} tracts have zero/very-low address density and are treated as missing in this plot.")
+
+    if df_b.empty:
+        st.warning("Not enough valid density data to plot under current filters.")
+    else:
+        if use_log_density:
+            df_b["x_density"] = np.log1p(df_b["addr_per_sqkm_c"])
+            x_title = "Address density (log1p)"
+        else:
+            df_b["x_density"] = df_b["addr_per_sqkm_c"]
+            x_title = "Address density (addresses per sq km)"
+
+        base_b = alt.Chart(df_b).mark_circle(opacity=0.75).encode(
+            x=alt.X("x_density:Q", title=x_title),
+            y=alt.Y("uninsured_pct_c:Q", title="Uninsured rate (%)"),
+            color=alt.Color("income_quartile:N", scale=income_scale, title="Income quartile"),
+            size=alt.Size("tot_pop:Q", title="Population", scale=alt.Scale(range=[20, 280])),
+            tooltip=[
+                alt.Tooltip("tract_name:N", title="Tract"),
+                alt.Tooltip("addr_per_sqkm:Q", title="Density (/km²)", format=",.0f"),
+                alt.Tooltip("uninsured_pct:Q", title="Uninsured (%)", format=".1f"),
+                alt.Tooltip("est_uninsured:Q", title="Est. uninsured", format=",.0f"),
+            ]
+        ).properties(height=340)
+
+        reg_b = base_b.transform_regression("x_density", "uninsured_pct_c").mark_line(
+            color=CHI_RED, strokeWidth=2, opacity=0.8
+        )
+
+        st.altair_chart(
+            (base_b + reg_b)
+            .configure_axis(labelColor=TEXT_DARK, titleColor=TEXT_DARK, gridColor="#E5E7EB")
+            .configure_view(stroke=None)
+            .configure_legend(labelColor=TEXT_DARK, titleColor=TEXT_DARK),
+            use_container_width=True
+        )
+
+    # =============================================================================
+    # Summary chart 1: Income quartile -> average uninsured rate
+    # =============================================================================
+    st.markdown("---")
+    st.subheader("Summary: uninsured rate by income quartile")
+
+    df_bar = filtered[["income_quartile", "uninsured_pct", "tot_pop"]].replace([np.inf, -np.inf], np.nan).dropna()
+    df_bar = df_bar[df_bar["income_quartile"].astype(str).isin(["Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"])]
+
+    if df_bar.empty:
+        st.warning("Not enough valid data to summarize uninsured rates by income quartile.")
+    else:
+        # Weighted mean uninsured by population (more policy-relevant)
+        grouped = (
+            df_bar.assign(w=df_bar["tot_pop"])
+            .groupby("income_quartile", as_index=False)
+            .apply(lambda g: pd.Series({
+                "avg_uninsured_wt": np.average(g["uninsured_pct"], weights=g["w"])
+            }))
+            .reset_index()
+        )
+
+        # Ensure quartile ordering
+        order = ["Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"]
+        grouped["income_quartile"] = pd.Categorical(grouped["income_quartile"], categories=order, ordered=True)
+        grouped = grouped.sort_values("income_quartile")
+
+        bar1 = alt.Chart(grouped).mark_bar(color=CHI_BLUE).encode(
+            x=alt.X("income_quartile:N", title="Income quartile (within filtered tracts)", sort=order),
+            y=alt.Y("avg_uninsured_wt:Q", title="Population-weighted uninsured rate (%)"),
+            tooltip=[
+                alt.Tooltip("income_quartile:N", title="Quartile"),
+                alt.Tooltip("avg_uninsured_wt:Q", title="Avg uninsured (%)", format=".2f"),
+            ]
+        ).properties(height=320)
+
+        labels1 = alt.Chart(grouped).mark_text(
+            dy=-8, color=TEXT_DARK
+        ).encode(
+            x=alt.X("income_quartile:N", sort=order),
+            y=alt.Y("avg_uninsured_wt:Q"),
+            text=alt.Text("avg_uninsured_wt:Q", format=".1f")
+        )
+
+        st.altair_chart(
+            (bar1 + labels1)
+            .configure_axis(labelColor=TEXT_DARK, titleColor=TEXT_DARK, gridColor="#E5E7EB")
+            .configure_view(stroke=None),
+            use_container_width=True
+        )
+
+        st.caption(
+             "Lower-income quartiles tend to have higher uninsured rates on average, "
+             "though the relationship is not perfectly monotonic across quartiles."
+        )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# TAB 3: PRIORITY TRACTS
-# ─────────────────────────────────────────────────────────────────────────────
+# =============================================================================
+# TAB 3: PRIORITY LIST
+# =============================================================================
 with tabs[2]:
-    st.markdown("## Priority tracts (action list)")
-    st.caption("Flagged tracts meet: high density + low income + high uninsured under current thresholds.")
+    st.subheader("Priority list (actionable tracts)")
+
+    st.write(
+        "These tracts meet your current threshold rules (high density + low income + high uninsured). "
+        "The score below ranks flagged tracts under your **scenario weights**."
+    )
 
     pr = filtered[filtered["priority_flag"]].copy()
-
     if pr.empty:
         st.warning("No tracts meet the current thresholds. Adjust the quantiles in the sidebar.")
         st.stop()
 
-    # Keep only columns we need
-    dfp = pr[["tract_name", "med_hh_inc", "uninsured_pct", "addr_per_sqkm", "tot_pop"]].copy()
+    dfp = pr[["tract_name", "med_hh_inc", "uninsured_pct", "addr_per_sqkm", "tot_pop", "est_uninsured"]].copy()
+    dfp = dfp.replace([np.inf, -np.inf], np.nan).dropna(subset=["med_hh_inc", "uninsured_pct", "tot_pop"])
 
-    # Guard against edge cases
-    dfp = dfp.replace([np.inf, -np.inf], np.nan).dropna()
-    if dfp.empty:
-        st.warning("No priority tracts remain after removing missing values. Try adjusting filters/thresholds.")
-        st.stop()
+    # z-scores (within priority set) for transparent ranking
+    def z(s: pd.Series) -> pd.Series:
+        s = s.astype(float)
+        sd = s.std(ddof=0)
+        if np.isclose(sd, 0) or np.isnan(sd):
+            return pd.Series(np.zeros(len(s)), index=s.index)
+        return (s - s.mean()) / sd
 
-    # Create a simple priority score using standardized components (transparent weights)
-    # Higher uninsured, lower income, higher density -> higher score.
-    dfp["z_density"] = (dfp["addr_per_sqkm"] - dfp["addr_per_sqkm"].mean()) / dfp["addr_per_sqkm"].std(ddof=0)
-    dfp["z_uninsured"] = (dfp["uninsured_pct"] - dfp["uninsured_pct"].mean()) / dfp["uninsured_pct"].std(ddof=0)
-    dfp["z_income_low"] = (dfp["med_hh_inc"].mean() - dfp["med_hh_inc"]) / dfp["med_hh_inc"].std(ddof=0)
+    # Density: treat non-positive as missing for scoring; fill missing density z as 0 (neutral)
+    dens = dfp["addr_per_sqkm"].copy()
+    dens = dens.where(dens > 0, np.nan)
 
-    # If a standard deviation is zero (rare), avoid NaNs
-    dfp[["z_density", "z_uninsured", "z_income_low"]] = dfp[["z_density", "z_uninsured", "z_income_low"]].fillna(0)
+    dfp["z_uninsured"] = z(dfp["uninsured_pct"])
+    dfp["z_income_low"] = z(-dfp["med_hh_inc"])  # lower income -> higher score
+    dfp["z_density"] = z(dens).fillna(0)
 
-    dfp["priority_score"] = 0.40 * dfp["z_uninsured"] + 0.35 * dfp["z_income_low"] + 0.25 * dfp["z_density"]
+    # Normalize weights (avoid “sum != 1” confusion)
+    w_sum = w_uninsured + w_income + w_density
+    if w_sum == 0:
+        w_uninsured_n, w_income_n, w_density_n = 0.50, 0.35, 0.15
+    else:
+        w_uninsured_n, w_income_n, w_density_n = w_uninsured / w_sum, w_income / w_sum, w_density / w_sum
 
-    # Top 15 table
+    dfp["priority_score"] = (
+        w_uninsured_n * dfp["z_uninsured"] +
+        w_income_n * dfp["z_income_low"] +
+        w_density_n * dfp["z_density"]
+    )
+
+    # Add a policy-friendly field: est uninsured
+    # (already exists) but ensure readable
+    dfp["est_uninsured"] = dfp["est_uninsured"].round(0)
+
+    # Top table
     top = dfp.sort_values("priority_score", ascending=False).head(15).copy()
-
     top = top.rename(columns={
         "tract_name": "Tract",
         "med_hh_inc": "Median income ($)",
         "uninsured_pct": "Uninsured (%)",
         "addr_per_sqkm": "Address density (/km²)",
         "tot_pop": "Population",
+        "est_uninsured": "Estimated uninsured (count)",
         "priority_score": "Priority score"
     })
 
     top["Median income ($)"] = top["Median income ($)"].round(0).astype(int)
     top["Population"] = top["Population"].round(0).astype(int)
-    for c in ["Uninsured (%)", "Address density (/km²)", "Priority score"]:
-        top[c] = top[c].astype(float).round(2)
+    top["Uninsured (%)"] = top["Uninsured (%)"].round(2)
+    top["Address density (/km²)"] = top["Address density (/km²)"].round(2)
+    top["Priority score"] = top["Priority score"].round(3)
+    top["Estimated uninsured (count)"] = top["Estimated uninsured (count)"].fillna(0).astype(int)
 
-    st.markdown("### Top 15 flagged tracts (by a simple priority score)")
+    st.caption(
+        f"Current normalized weights: uninsured={w_uninsured_n:.2f}, low income={w_income_n:.2f}, density={w_density_n:.2f}. "
+        "Higher density weight prioritizes reach efficiency; higher uninsured/income weights prioritize severity/need."
+    )
+
     st.dataframe(top, use_container_width=True, hide_index=True)
 
-    # Download full list of flagged tracts
-    # CSV export (sort BEFORE renaming, otherwise sort_values will not find the old column name)
-if "priority_score" in dfp.columns:
-    export_df = (
-        dfp.sort_values("priority_score", ascending=False)
-           .rename(columns={
-               "tract_name": "Tract",
-               "med_hh_inc": "Median income ($)",
-               "uninsured_pct": "Uninsured (%)",
-               "addr_per_sqkm": "Address density (/km²)",
-               "tot_pop": "Population",
-               "priority_score": "Priority score"
-           })
-    )
-    csv = export_df.to_csv(index=False).encode("utf-8")
-else:
-    csv = None
+    # Download full list
+    export_df = dfp.sort_values("priority_score", ascending=False).rename(columns={
+        "tract_name": "Tract",
+        "med_hh_inc": "Median income ($)",
+        "uninsured_pct": "Uninsured (%)",
+        "addr_per_sqkm": "Address density (/km²)",
+        "tot_pop": "Population",
+        "est_uninsured": "Estimated uninsured (count)",
+        "priority_score": "Priority score"
+    })
 
-st.download_button(
-    "Download all flagged tracts (CSV)",
-    data=csv,
-    file_name="priority_tracts.csv",
-    mime="text/csv",
-    disabled=(csv is None)
-)
+    csv = export_df.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download flagged tracts (CSV)",
+        data=csv,
+        file_name="priority_tracts.csv",
+        mime="text/csv"
+    )
