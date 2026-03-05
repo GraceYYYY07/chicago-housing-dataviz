@@ -1,0 +1,119 @@
+---
+title: "Housing Density, Income, and Uninsured Rates in Chicago's South Side: A Tract-Level Analysis"
+author: "Grace Yao, Jiamin Zhang, Yuxin Zheng"
+date: today
+format:
+  html:
+    toc: true
+    embed-resources: true
+  pdf:
+    toc: true
+    number-sections: true
+    geometry: margin=1in
+    fontsize: 11pt
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+**Group Members:** Grace Yao, Jiamin Zhang, Yuxin Zheng
+
+**Section:** Tuesday 11:00 am – 12:20 pm, Section 4
+
+**GitHub:** \[GraceYYYY07,Yuxin217-u,jasmine420222\]
+
+---
+
+## 1. Motivation and Research Question
+
+Our project starts with a simple question: if you live in a really crowded, really poor neighborhood in Chicago, is it harder to get healthcare? Chicago's South Side is one of the most extensively documented examples of urban inequality in the United States — the result of decades of structural policy decisions.
+
+Our core research question is:
+
+> **How are housing density and neighborhood income associated with uninsured rates at the Census Tract level in Chicago's South Side?**
+
+Our goal is **descriptive, not causal**. We do not claim that density causes poverty. Instead, we ask whether housing density, income, and lack of health insurance spatially cluster in the same neighborhoods. If they do, that overlap provides policymakers with a clear, actionable signal: where to build community health clinics, where to run Medicaid enrollment drives, and where concentrated outreach would reach the most underserved residents.
+
+So once we had the research questions, we thought about: how do we actually show this? We chose figure 1 as a map, as it makes inequality visible in a way that tables and numbers just don't. And before modeling uninsured rates, we first examine the relationship between residential density and income, since density may be correlated with economic structure. Figure 2 is a scatter plot with every Census Tract as a point. (exploring the relationship between income, density, and uninsured rate in one plot)
+
+---
+
+## 2. Data and Approach
+
+### Datasets
+
+We use two primary datasets:
+
+- **Residential address CSV** (`data/obama_addresses_mappable_t.csv`): ~256,000 rows with latitude and longitude coordinates covering properties across Chicago.
+- **U.S. Census Tract shapefile** (`data/il_tract.*`): Cook County tract boundaries with tract-level median household income and uninsured rate estimates from the American Community Survey (ACS).
+
+### Data Processing Pipeline
+
+All processing is handled in this `.qmd` file and proceeds in six steps:
+1. **Geocoding:** Each address is converted to a geographic point and projected to EPSG:4326 to ensure coordinate alignment with the shapefile.
+2. **Spatial Join:** Each address point is matched to the Census Tract polygon that contains it, assigning a tract ID to every address record.
+3. **Density Calculation:** Addresses are grouped by tract and counted. This address count serves as our housing density proxy (addresses per sq km).
+4. **Merge:** Address counts are left-joined back to the shapefile so that tracts with no matched addresses receive a value of zero rather than being dropped.
+5. **Filter & Enrich:** The merged dataset is filtered to South Side tracts only.
+6. **Sort and Group Income Data:** An income quartile variable is constructed by splitting tracts into four equal income groups, enabling comparison across the income distribution.
+
+## 3. Visualizations
+### Figure 1: Spatial Overlap of Income and Housing Density
+
+The first figure is a choropleth map of the South Side with tracts shaded by median household income. Density contour lines are overlaid, and tracts that are simultaneously low-income and high-density are outlined in orange.
+
+**Key finding:** The densest areas largely coincide with the lowest-income tracts. The contour lines sit directly on top of the red (lowest-income) regions, confirming that density and poverty concentrate in the same central South Side neighborhoods. This spatial co-occurrence motivates our examination of their joint relationship with uninsured rates.
+
+---
+
+### Figure 2: Address Count vs. Uninsured Rate by Income Quartile
+
+The second figure is a scatter plot where each point represents one Census Tract. The x-axis is address count (density proxy), the y-axis is uninsured rate, and color encodes income quartile.
+
+**Key finding:** Income quartiles separate clearly along the y-axis, lowest-income tracts cluster at the top (highest uninsured rates) while highest-income tracts sit at the bottom. No consistent trend appears along the x-axis. Uninsured disparities are far more strongly structured by income than by raw address density.
+
+---
+
+## 4. Streamlit App
+
+**Live app:** [South Side Inequality Dashboard](https://final-project-team40.streamlit.app/)
+
+On the left sidebar, we pick the metric which includes: median income, addressing density, uninsured rate as the base picture. There are three threshold sliders that define what counts as a "priority" tract: top 25% in density, bottom 25% in income, top 25% in uninsured rate are the default numbers. By using the sidebar, we could set different ranges for each factor and get the areas that with lower income, and higher address density and higher uninsured rate which are the orange outlines, the policy maker should probably focus on these tracts. (the reason for setting these sliders is that policy makers might have limited resources, so they get to pick the areas they think is more in need by adjusting the range and weight for factors)
+
+**Three tabs:**
+
+| Tab | Content |
+|-----|---------|
+| **Interactive Map** | Folium map, pan, zoom, hover to see all tract indicators; priority tracts highlighted in orange |
+| **Scatter Plots** | Side-by-side: income vs. uninsured rate and density vs. uninsured rate |
+| **Priority Action List** | Ranked table of tracts meeting all three priority conditions, sorted by composite score; downloadable as CSV |
+
+Under the default thresholds, the app identifies **9 priority tracts** with an average uninsured rate of ~30%, compared to a South Side average of 20.6% — a gap of nearly **50%**.
+
+---
+
+## 5. Key Findings & Policy Implications
+
+**Income strongly predicts uninsured rates.** Higher-income tracts consistently show lower uninsured rates. This relationship is visually clear and stable across all analyses.
+
+**Density and poverty spatially co-occur.** High-density areas largely overlap with low-income tracts in the central South Side, suggesting that dense neighborhoods often face compounded socioeconomic disadvantage.
+
+**Density alone is not a strong predictor of uninsured rates.** Once income differences are accounted for, the density–uninsured relationship weakens considerably. Socioeconomic structure explains uninsured variation more than spatial clustering alone.
+
+These findings suggest that outreach and enrollment resources should be prioritized toward tracts that combine three characteristics: low income, high uninsured rates, and high resident concentration. Such tracts represent both high need and high potential reach which are strong candidates for targeted Medicaid outreach or community health clinic placement.
+The app is designed so that a real analyst can adjust thresholds to match a specific program's eligibility criteria and walk out with an actionable target list.
+
+---
+
+## 6. Weaknesses & Difficulties
+
+**Density measure:** Address count is a proxy for residential density, not a precise per-km² calculation. Tracts of very different physical sizes may have similar counts, making raw comparisons imperfect.
+
+**No causal identification:** The analysis is entirely descriptive. Confounders such as age structure, racial composition, and employment type are not controlled for.
+
+**ACS margin of error:** Tract-level ACS estimates carry high margins of error for small tracts, adding noise to the uninsured rate variable.
+
+**Spatial join coverage:** A small number of addresses fell outside tract boundaries (due to geocoding imprecision) and were excluded from the analysis.
+
+---
