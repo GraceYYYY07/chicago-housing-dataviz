@@ -4,7 +4,7 @@ Chicago South Side: Residential Density & Community Health Inequality
 Data preparation script
 
 Data source:
-- Address data: cleaned_F_ADD1_not0.csv  (46,899 residential buildings)
+- Address data: cleaned_addresses_full.csv
   Columns used: lon, lat, NO_OF_UNIT
 - Census tract shapefile: il_tract.shp  (Cook County subset)
 
