@@ -19,7 +19,7 @@ These dynamics motivate the central descriptive question of this project: Across
 | Dataset | Description | Source |
 |---|---|---|
 | `address_data.csv` | ~488,689 residential building addresses (replaces `obama_addresses_mappable_t.csv`) | [Chicago Data Portal – Building Footprints](https://data.cityofchicago.org/Buildings/Building-Footprints/syp8-uezg/about_data) |
-| `il_tract.shp` | Illinois Census tract shapefile (Cook County subset) | U.S. Census Bureau | [ACS American Community Service](https://data.census.gov/)
+| `il_tract.shp` | Illinois Census tract shapefile (Cook County subset) | U.S. Census Bureau | [ACS American Community Service](https://www.census.gov/geographies/mapping-files/time-series/geo/tiger-line-file.html) ｜
 
 The shapefile provides tract-level income, uninsured rate, and geographic boundaries. The address dataset is used to construct housing density as a proxy variable.
 ---
