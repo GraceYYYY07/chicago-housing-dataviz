@@ -1,119 +1,306 @@
 ---
 title: "Housing Density, Income, and Uninsured Rates in Chicago's South Side: A Tract-Level Analysis"
-author: "Grace Yao, Jiamin Zhang, Yuxin Zheng"
-date: today
 format:
-  html:
-    toc: true
-    embed-resources: true
   pdf:
-    toc: true
+    toc: false
     number-sections: true
     geometry: margin=1in
-    fontsize: 11pt
+    fontsize: 9pt
 execute:
   echo: false
   warning: false
   message: false
+jupyter: python3
 ---
 
-**Group Members:** Grace Yao, Jiamin Zhang, Yuxin Zheng
+\vspace{-2em}
 
-**Section:** Tuesday 11:00 am – 12:20 pm, Section 4
+**Group Members:** Grace Yao, Jiamin Zhang, Yuxin Zheng  
+**Section:** Tuesday 11:00 am – 12:20 pm, Section 4  
+**GitHub:** GraceYYYY07, Yuxin217-u, jasmine420222
 
-**GitHub:** \[GraceYYYY07,Yuxin217-u,jasmine420222\]
+```{python}
+#| label: setup
+import warnings
+warnings.filterwarnings("ignore")
 
----
+from pathlib import Path
 
-## 1. Motivation and Research Question
+import numpy as np
+import pandas as pd
+import geopandas as gpd
+from shapely.geometry import Point
 
-Our project starts with a simple question: if you live in a really crowded, really poor neighborhood in Chicago, is it harder to get healthcare? Chicago's South Side is one of the most extensively documented examples of urban inequality in the United States — the result of decades of structural policy decisions.
+import matplotlib.pyplot as plt
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
+from matplotlib.lines import Line2D
 
-Our core research question is:
+from scipy.interpolate import griddata
+import altair as alt
+```
 
-> **How are housing density and neighborhood income associated with uninsured rates at the Census Tract level in Chicago's South Side?**
+## Motivation and Research Question
 
-Our goal is **descriptive, not causal**. We do not claim that density causes poverty. Instead, we ask whether housing density, income, and lack of health insurance spatially cluster in the same neighborhoods. If they do, that overlap provides policymakers with a clear, actionable signal: where to build community health clinics, where to run Medicaid enrollment drives, and where concentrated outreach would reach the most underserved residents.
+Chicago’s South Side has long experienced substantial economic inequality and disparities in access to healthcare. Income differences may play an important role in insurance coverage. Lower-income households may face greater financial barriers to purchasing health insurance, and workers in lower-wage jobs are also less likely to receive employer-sponsored insurance. In addition to income, residential patterns may also matter. Areas with higher housing density may include more informal housing arrangements, transient populations, or workers employed in sectors that are less likely to provide employer-sponsored insurance. If this mechanism is important, neighborhoods with higher density may exhibit higher uninsured rates. 
 
-So once we had the research questions, we thought about: how do we actually show this? We chose figure 1 as a map, as it makes inequality visible in a way that tables and numbers just don't. And before modeling uninsured rates, we first examine the relationship between residential density and income, since density may be correlated with economic structure. Figure 2 is a scatter plot with every Census Tract as a point. (exploring the relationship between income, density, and uninsured rate in one plot)
+Motivated by these considerations, this project has the following descriptive research question: How are housing density and neighborhood income associated with uninsured rates at the census tract level in Chicago’s South Side?
 
----
+```{python}
+# Preprocessing
+#| output: false
 
-## 2. Data and Approach
+ROOT = Path(".").resolve()
+DATA_DIR = ROOT / "data"
+RAW_DIR = DATA_DIR / "raw-data"
+DERIVED_DIR = DATA_DIR / "derived-data"
+DERIVED_DIR.mkdir(parents=True, exist_ok=True)
 
-### Datasets
+CSV_PATH = RAW_DIR / "address_data.csv"
+SHP_PATH = RAW_DIR / "il_tract.shp"
+OUT_PATH = DERIVED_DIR / "merged_tract.geojson"
 
-We use two primary datasets:
+# Step 1 & 2: Load address CSV and convert to GeoDataFrame
+df = pd.read_csv(CSV_PATH)
+df = df.dropna(subset=["lat", "lon"])
+geometry = [Point(lon, lat) for lon, lat in zip(df["lon"], df["lat"])]
+addr_gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
 
-- **Residential address CSV** (`data/obama_addresses_mappable_t.csv`): ~256,000 rows with latitude and longitude coordinates covering properties across Chicago.
-- **U.S. Census Tract shapefile** (`data/il_tract.*`): Cook County tract boundaries with tract-level median household income and uninsured rate estimates from the American Community Survey (ACS).
+# Step 3: Load census tract shapefile, subset Cook County
+tracts = gpd.read_file(SHP_PATH)
+cook_tracts = tracts[tracts["COUNTYFP"] == "031"].copy()
+cook_tracts = cook_tracts.to_crs("EPSG:4326")
 
-### Data Processing Pipeline
+# Step 4: Spatial join
+joined = gpd.sjoin(
+    addr_gdf,
+    cook_tracts[["GEOID", "geometry"]],
+    how="left",
+    predicate="within"
+)
+addr_counts = (
+    joined
+    .groupby("GEOID")
+    .agg(
+        addr_count=("BLDG_ID", "count"),
+        unit_count=("NO_OF_UNIT", "sum"),
+    )
+    .reset_index()
+)
 
-All processing is handled in this `.qmd` file and proceeds in six steps:
-1. **Geocoding:** Each address is converted to a geographic point and projected to EPSG:4326 to ensure coordinate alignment with the shapefile.
-2. **Spatial Join:** Each address point is matched to the Census Tract polygon that contains it, assigning a tract ID to every address record.
-3. **Density Calculation:** Addresses are grouped by tract and counted. This address count serves as our housing density proxy (addresses per sq km).
-4. **Merge:** Address counts are left-joined back to the shapefile so that tracts with no matched addresses receive a value of zero rather than being dropped.
-5. **Filter & Enrich:** The merged dataset is filtered to South Side tracts only.
-6. **Sort and Group Income Data:** An income quartile variable is constructed by splitting tracts into four equal income groups, enabling comparison across the income distribution.
+# Step 5: Clean ACS variables
+cols_check = ["med_hh_inc", "pct_no_hlt", "pop_0_17", "tot_pop"]
+for col in cols_check:
+    if col not in cook_tracts.columns:
+        raise ValueError(f"Missing required column in tract shapefile: {col}")
+for col in cols_check:
+    if col == "med_hh_inc":
+        cook_tracts.loc[cook_tracts[col] <= 0, col] = np.nan
+    elif col in ["pop_0_17", "tot_pop"]:
+        cook_tracts.loc[cook_tracts[col] <= 0, col] = np.nan
+    elif col == "pct_no_hlt":
+        cook_tracts.loc[cook_tracts[col] < 0, col] = np.nan
+    median_val = float(cook_tracts[col].median())
+    cook_tracts[col] = cook_tracts[col].fillna(median_val)
 
-## 3. Visualizations
-### Figure 1: Spatial Overlap of Income and Housing Density
+# Step 6: Merge and compute densities
+merged = cook_tracts.merge(addr_counts, on="GEOID", how="left")
+merged["addr_count"] = merged["addr_count"].fillna(0).astype(int)
+merged["unit_count"] = merged["unit_count"].fillna(0).astype(float)
+area_gdf = merged.to_crs(epsg=3435)
+merged["area_sqkm"] = area_gdf.geometry.area / 1_000_000
+merged.loc[merged["area_sqkm"] <= 0, "area_sqkm"] = np.nan
+merged["addr_per_sqkm"] = merged["addr_count"] / merged["area_sqkm"]
+merged["unit_per_sqkm"] = merged["unit_count"] / merged["area_sqkm"]
+merged["pop_per_sqkm"]  = merged["tot_pop"]    / merged["area_sqkm"]
 
-The first figure is a choropleth map of the South Side with tracts shaded by median household income. Density contour lines are overlaid, and tracts that are simultaneously low-income and high-density are outlined in orange.
+# Step 7: Subset to South Side
+merged["centroid_lat"] = merged.geometry.centroid.y
+merged["centroid_lon"] = merged.geometry.centroid.x
+south_side = merged[
+    (merged["centroid_lat"] >= 41.63) &
+    (merged["centroid_lat"] <= 41.87) &
+    (merged["centroid_lon"] >= -87.76) &
+    (merged["centroid_lon"] <= -87.52)
+].copy()
+south_side = south_side.drop(columns=["centroid_lat", "centroid_lon"])
 
-**Key finding:** The densest areas largely coincide with the lowest-income tracts. The contour lines sit directly on top of the red (lowest-income) regions, confirming that density and poverty concentrate in the same central South Side neighborhoods. This spatial co-occurrence motivates our examination of their joint relationship with uninsured rates.
+# Step 8: Income quartiles
+south_side["income_quartile"] = pd.qcut(
+    south_side["med_hh_inc"], q=4,
+    labels=["Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"]
+)
 
----
+# Step 9: Save
+south_side.to_file(OUT_PATH, driver="GeoJSON")
+```
 
-### Figure 2: Address Count vs. Uninsured Rate by Income Quartile
+## Data and Approach
 
-The second figure is a scatter plot where each point represents one Census Tract. The x-axis is address count (density proxy), the y-axis is uninsured rate, and color encodes income quartile.
+We combine two datasets for this analysis.
 
-**Key finding:** Income quartiles separate clearly along the y-axis, lowest-income tracts cluster at the top (highest uninsured rates) while highest-income tracts sit at the bottom. No consistent trend appears along the x-axis. Uninsured disparities are far more strongly structured by income than by raw address density.
+The first dataset is a residential address dataset containing approximately 489,000 building address records with geographic coordinates derived from Chicago Data Portal. These address points are used to construct a proxy for residential density. The second dataset is the Illinois Census tract shapefile, which provides tract boundaries along with socioeconomic variables derived from the U.S. Census Bureau’s TIGER/Line Shapefiles, including median household income and uninsured rates.
 
----
+In an earlier version of the project we used the dataset `obama_addresses_mappable_t.csv`, which only covered the area surrounding the Obama Presidential Center. Because that dataset represented only a small portion of Chicago’s South Side and produced many tracts with zero density values, we replaced it with a larger address dataset covering the broader region (`address_data.csv`).
 
-## 4. Streamlit App
+Address coordinates are converted into geographic points and spatially joined with census tract polygons. We use address points instead of census household counts because they provide a finer spatial proxy for residential concentration and better visualize how buildings are distributed across tracts. Addresses are then aggregated by census tract to calculate address density, measured as building addresses per square kilometer. These density measures are merged with tract-level income and uninsured rate data to construct the final dataset used in the analysis.
 
-**Live app:** [South Side Inequality Dashboard](https://final-project-team40.streamlit.app/)
+## Static Visualizations
 
-On the left sidebar, we pick the metric which includes: median income, addressing density, uninsured rate as the base picture. There are three threshold sliders that define what counts as a "priority" tract: top 25% in density, bottom 25% in income, top 25% in uninsured rate are the default numbers. By using the sidebar, we could set different ranges for each factor and get the areas that with lower income, and higher address density and higher uninsured rate which are the orange outlines, the policy maker should probably focus on these tracts. (the reason for setting these sliders is that policy makers might have limited resources, so they get to pick the areas they think is more in need by adjusting the range and weight for factors)
+### Figure 1: Median Income by Census Tract
 
-**Three tabs:**
+Figure 1 presents a spatial map of Chicago’s South Side at the census tract level. Tracts are colored by median household income, with red indicating lower-income areas and blue indicating higher-income areas. Contour lines represent housing density derived from address counts and indicate areas where residential addresses are more concentrated. The map shows that lower-income tracts cluster in several central areas of the South Side, and many of these same areas also exhibit relatively high housing density. This spatial overlap suggests that dense residential areas often coincide with economically disadvantaged neighborhoods and provides descriptive evidence relevant to our research question by illustrating how income and housing density vary across neighborhoods.
 
-| Tab | Content |
-|-----|---------|
-| **Interactive Map** | Folium map, pan, zoom, hover to see all tract indicators; priority tracts highlighted in orange |
-| **Scatter Plots** | Side-by-side: income vs. uninsured rate and density vs. uninsured rate |
-| **Priority Action List** | Ranked table of tracts meeting all three priority conditions, sorted by composite score; downloadable as CSV |
+```{python}
+#| fig-width: 5.8
+#| fig-height: 5
 
-Under the default thresholds, the app identifies **9 priority tracts** with an average uninsured rate of ~30%, compared to a South Side average of 20.6% — a gap of nearly **50%**.
+DATA_PATH = DERIVED_DIR / "merged_tract.geojson"
+OUT_DIR = DERIVED_DIR
 
----
+def _require_columns(df, cols, name):
+    missing = [c for c in cols if c not in df.columns]
+    if missing:
+        raise KeyError(f"{name} is missing required columns: {missing}")
 
-## 5. Key Findings & Policy Implications
+gdf = gpd.read_file(DATA_PATH)
+gdf_plot = gdf.copy().to_crs(epsg=3857)
 
-**Income strongly predicts uninsured rates.** Higher-income tracts consistently show lower uninsured rates. This relationship is visually clear and stable across all analyses.
+vmin = gdf_plot["med_hh_inc"].quantile(0.05)
+vmax = gdf_plot["med_hh_inc"].quantile(0.95)
 
-**Density and poverty spatially co-occur.** High-density areas largely overlap with low-income tracts in the central South Side, suggesting that dense neighborhoods often face compounded socioeconomic disadvantage.
+fig, ax = plt.subplots(figsize=(5.8,5))
 
-**Density alone is not a strong predictor of uninsured rates.** Once income differences are accounted for, the density–uninsured relationship weakens considerably. Socioeconomic structure explains uninsured variation more than spatial clustering alone.
+fig.patch.set_facecolor("white")
+ax.set_facecolor("white")
 
-These findings suggest that outreach and enrollment resources should be prioritized toward tracts that combine three characteristics: low income, high uninsured rates, and high resident concentration. Such tracts represent both high need and high potential reach which are strong candidates for targeted Medicaid outreach or community health clinic placement.
-The app is designed so that a real analyst can adjust thresholds to match a specific program's eligibility criteria and walk out with an actionable target list.
+gdf_plot.plot(
+    column="med_hh_inc",
+    cmap="RdYlBu",
+    linewidth=0.25,
+    edgecolor="#c7c7c7",
+    legend=False,
+    ax=ax,
+    vmin=vmin,
+    vmax=vmax,
+    missing_kwds={"color": "#efefef"},
+)
 
----
+density_tracts = gdf_plot[gdf_plot["addr_count"] > 0].copy()
+if len(density_tracts) > 10:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        density_tracts["cx"] = density_tracts.geometry.centroid.x
+        density_tracts["cy"] = density_tracts.geometry.centroid.y
 
-## 6. Weaknesses & Difficulties
+    x = density_tracts["cx"].to_numpy()
+    y = density_tracts["cy"].to_numpy()
+    z = density_tracts["addr_count"].to_numpy(dtype=float)
 
-**Density measure:** Address count is a proxy for residential density, not a precise per-km² calculation. Tracts of very different physical sizes may have similar counts, making raw comparisons imperfect.
+    xi = np.linspace(x.min(), x.max(), 200)
+    yi = np.linspace(y.min(), y.max(), 200)
+    xi, yi = np.meshgrid(xi, yi)
+    zi = griddata((x, y), z, (xi, yi), method="cubic")
 
-**No causal identification:** The analysis is entirely descriptive. Confounders such as age structure, racial composition, and employment type are not controlled for.
+    p25 = float(np.nanpercentile(z, 25))
+    p50 = float(np.nanpercentile(z, 50))
+    p75 = float(np.nanpercentile(z, 75))
+    p90 = float(np.nanpercentile(z, 90))
+    p95 = float(np.nanpercentile(z, 95))
+    levels = sorted(set([round(v) for v in [p25, p50, p75, p90, p95] if v > 0]))
 
-**ACS margin of error:** Tract-level ACS estimates carry high margins of error for small tracts, adding noise to the uninsured rate variable.
+    contour = ax.contour(
+        xi, yi, zi,
+        levels=levels,
+        colors=["#3b3b3b"],
+        alpha=0.5,
+        linewidths=[0.8, 1.0, 1.1, 1.3, 1.6],
+    )
+    ax.clabel(contour, inline=True, fontsize=8, fmt="%d", colors="#3b3b3b")
 
-**Spatial join coverage:** A small number of addresses fell outside tract boundaries (due to geocoding imprecision) and were excluded from the analysis.
+addr_hi = float(gdf_plot["addr_count"].quantile(0.75))
+inc_lo  = float(gdf_plot["med_hh_inc"].quantile(0.25))
+highlight = gdf_plot[
+    (gdf_plot["addr_count"] >= addr_hi) &
+    (gdf_plot["med_hh_inc"]  <= inc_lo)
+].copy()
 
----
+if len(highlight) > 0:
+    highlight.plot(ax=ax, color="none", edgecolor="#FF6B35", linewidth=2.0)
+
+norm = Normalize(vmin=vmin, vmax=vmax)
+sm = ScalarMappable(cmap="RdYlBu", norm=norm)
+sm.set_array([])
+
+cbar = fig.colorbar(sm, ax=ax, fraction=0.03, pad=0.02, shrink=0.75)
+cbar.set_label("Median household income ($)", fontsize=10)
+
+legend_elements = [
+    Line2D([0], [0], color="#3b3b3b", alpha=0.6, linewidth=1.2,
+           label="Address-count contour lines"),
+    Line2D([0], [0], color="#FF6B35", linewidth=2.0,
+           label="High address count & low income (top 25% / bottom 25%)"),
+]
+
+ax.legend(handles=legend_elements, loc="lower left", frameon=True)
+
+ax.set_title("Median Household Income by Census Tract", fontsize=12)
+
+ax.set_axis_off()
+
+plt.tight_layout()
+plt.show()
+```
+
+### Figure 2: Address Density vs Uninsured Rate
+
+Figure 2 examines how housing density and neighborhood income are associated with uninsured rates across census tracts. Each point represents a tract, colored by income quartile and sized by population. The figure shows a strong relationship between income and uninsured rates: lower-income tracts consistently exhibit higher uninsured rates, while higher-income tracts tend to have substantially lower uninsured rates. In contrast, housing density alone does not strongly predict uninsured rates, as tracts with similar density levels can exhibit very different uninsured rates depending on their income levels. This pattern suggests that income differences play a larger role in explaining insurance disparities than housing density itself.
+
+```{python}
+#| label: fig-scatter
+#| fig-width: 4.8
+#| fig-height: 3.6
+
+#| echo: false
+import geopandas as gpd
+import altair as alt
+
+gdf = gpd.read_file("data/derived-data/merged_tract.geojson")
+df = gdf[gdf["addr_per_sqkm"] > 0].copy()
+df = df.drop(columns=["geometry"])
+df["addr_per_sqkm"] = df["addr_per_sqkm"].astype(float)
+df["uninsured_pct"] = df["pct_no_hlt"] * 100
+df["income_quartile"] = df["income_quartile"].astype(str)
+
+chart = (
+    alt.Chart(df).mark_circle(opacity=0.75)
+    .encode(
+        x=alt.X("addr_per_sqkm:Q", title="Address density (buildings per km²)", scale=alt.Scale(zero=False)),
+        y=alt.Y("uninsured_pct:Q", title="Uninsured rate (%)"),
+        size=alt.Size("tot_pop:Q", scale=alt.Scale(range=[20, 400])),
+        color=alt.Color("income_quartile:N", scale=alt.Scale(
+            domain=["Q1 (Lowest)", "Q2", "Q3", "Q4 (Highest)"],
+            range=["#d73027", "#fc8d59", "#91bfdb", "#4575b4"]))
+    )
+    .properties(width=700, height=400, title="Address Density and Uninsured Rate by Census Tract")
+)
+
+reg = chart.transform_regression("addr_per_sqkm", "uninsured_pct").mark_line(color="black", strokeDash=[5,3])
+final_chart = chart + reg
+
+# PNG
+final_chart.save("data/derived-data/figure2_scatter.png")
+```
+![](data/derived-data/figure2_scatter.png)
+
+## Streamlit App
+
+The dashboard includes an interactive map displaying census tracts and key indicators, including uninsured rates, income, and housing density. The app also shows scatter plots of housing density or income versus uninsured rates. It includes threshold sliders that allow users to define “priority tracts” based on low income, high uninsured rates, and high housing density. The app identifies tracts meeting the selected conditions and generates a prioritized list of neighborhoods that may warrant policy attention. Users can also define priority tracts using quantile thresholds (e.g., top 25% uninsured or lowest 25% income), allowing policymakers to target limited resources to the highest-need areas.
+
+## Weaknesses & Difficulties
+
+First, address counts are only a proxy for residential density and may not accurately reflect the number of households within each tract, particularly in areas with large multi-unit buildings. Second, the analysis is descriptive rather than causal, and uninsured rates may also be shaped by other tract characteristics such as employment structure, demographic composition, or eligibility for public insurance programs. Future work could incorporate more precise measures of housing units and additional socioeconomic variables to better understand the mechanisms linking neighborhood characteristics and insurance coverage.
+
+## Policy Implications
+
+Although this analysis is descriptive, the results suggest that uninsured rates are more strongly associated with income differences than with housing density. Tracts with low income and high uninsured rates may therefore represent areas for further policy attention and research.
