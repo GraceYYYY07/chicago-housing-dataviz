@@ -4,7 +4,7 @@ Chicago South Side: Residential Density & Community Health Inequality
 Data preparation script
 
 Data source:
-- Address data: cleaned_addresses_full.csv
+- Address data: address_data.csv  (488,689 residential buildings)
   Columns used: lon, lat, NO_OF_UNIT
 - Census tract shapefile: il_tract.shp  (Cook County subset)
 
@@ -32,7 +32,7 @@ RAW_DIR = DATA_DIR / "raw-data"
 DERIVED_DIR = DATA_DIR / "derived-data"
 DERIVED_DIR.mkdir(parents=True, exist_ok=True)
 
-CSV_PATH = RAW_DIR / "address_data.csv"    # South of Chicago address dataset
+CSV_PATH = RAW_DIR / "address_data.csv"      # NEW address dataset
 SHP_PATH = RAW_DIR / "il_tract.shp"
 OUT_PATH = DERIVED_DIR / "merged_tract.geojson"
 
