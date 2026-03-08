@@ -14,5 +14,4 @@ venv/
 # Outputs
 # data/derived-data/
 
-data/raw-data/address_data.xlsx
-data/raw-data/cleaned_addresses_full.csv
+
