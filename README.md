@@ -7,7 +7,7 @@ This dashboard explores **address density** (a proxy for housing concentration),
 | File | Description |
 |------|-------------|
 | `data/raw-data/address_data` | A residential address dataset containing ~488,689 building address records with geographic coordinates derived from Chicago Data Portal. Resourse link:https://data.cityofchicago.org/Buildings/Building-Footprints/syp8-uezg/about_data (replaces older `obama_addresses_mappable_t.csv`) |
-| `data/raw-data/il_tract.shp` | Illinois Census tract shapefile (Cook County subset) |
+| `data/raw-data/il_tract.shp` | Illinois Census tract shapefile (Cook County subset) |[ACS American Community Service](https://data.census.gov/)
 
 ## Usage
 
