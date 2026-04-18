@@ -2,7 +2,7 @@
 
 **Course:** Data Visualization (PPHA 30538, 2026 Winter) | **Team:** team40
 **Group Member** Grace Yao, Jiamin Zhang, Yuxin Zheng 
-**Streamlit URL**:https://final-project-team40.streamlit.app/
+**Streamlit URL**: https://grace-chicago-housing.streamlit.app/
 ---
 
 ## Research Question
